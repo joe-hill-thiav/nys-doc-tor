@@ -2,7 +2,9 @@
 
 import argparse
 import csv
+from collections import OrderedDict
 from datetime import datetime
+import random
 import re
 import string
 import time
@@ -32,7 +34,6 @@ URLS = {
 	'detail': 'http://nysdoccslookup.doccs.ny.gov/GCA00P00/WIQ3/WINQ130',
 	'detail2': 'http://nysdoccslookup.doccs.ny.gov/GCA00P00/WIQ2/WINQ120',
 }
-MAX_PAGES = 400
 
 requests_cache.install_cache('scrape', allowable_methods=['GET', 'POST'])
 
@@ -53,6 +54,8 @@ class NYS(object):
 		'Cache-Control': 'no-cache',
 	}
 
+	_seeds = None
+
 	def _r(self, response, expected_element=None):
 		""" BeautifulSoup response.content, check for expected_element """
 		s = BeautifulSoup(response.content, "lxml")
@@ -67,45 +70,23 @@ class NYS(object):
 			raise FUBAR("Failed to load page")
 		return s
 
-	def __init__(self):
+	def __init__(self, limit=10):
 		""" fetch DFH_STATE_TOKEN from the search form """
 		s = self._r(requests.get(URLS['base']), {'id': 'M00_LAST_NAMEI'})
 		self.DFH_STATE_TOKEN = s.find(
 			'input', attrs={'name': 'DFH_STATE_TOKEN'}
 		)['value']
+		self.limit = limit
 
-	def _process_page(self, page):
-		page_data = {}
-
-		for i, row in enumerate(page.find(id='dinlist').find_all('tr')):
-			if i == 0:
-				continue
-
-			din = row.find_all('td')[0].find(class_='buttolink')['value']
-
-			name = row.find_all('td')[1].text.strip()
-			log.debug(" - {0}".format(name))
-
-			page_data[din] = {
-				'din': din,
-				'name': name,
-				'sex': row.find_all('td')[2].text.strip(),
-				'dob': row.find_all('td')[3].text.strip(),
-				'status': row.find_all('td')[4].text.strip(),
-				'facility': row.find_all('td')[5].text.strip(),
-				'ethnicity': row.find_all('td')[6].text.strip(),
-			}
-			last_seen_name = name
-
-			k02 = row.find_all('td')[0].find(name='K02')
-
+	def inmate_details(self, din):
 			self.headers['Referer'] = URLS['search']
+
+			log.debug("DETAILS {0}".format(din))
 
 			data = {
 				'M13_PAGE_CLICKI': '',
 				'M13_SEL_DINI': din,
 				'K01': 'WINQ130',
-				'K02': k02,
 				'K03': '',
 				'K04': '1',
 				'K05': '2',
@@ -133,12 +114,37 @@ class NYS(object):
 				s = self._r(requests.post(URLS['detail2'], data, headers=self.headers),
 										{'id': 't1a'})
 
-			page_data[din]['county'] = s.find(headers='t1k').text.strip()
+			return {
+				"county": s.find(headers='t1k').text.strip()
+			}
 
-		return page_data, last_seen_name
 
-	def search(self, name, page_i=0):
-		# TODO support other types of query
+	def _process_page(self, page):
+		page_data = OrderedDict()
+
+		for i, row in enumerate(page.find(id='dinlist').find_all('tr')):
+			if i == 0:
+				continue
+
+			din = row.find_all('td')[0].find(class_='buttolink')['value']
+
+			name = row.find_all('td')[1].text.strip()
+
+			page_data[din] = {
+				'din': din,
+				'name': name,
+				'sex': row.find_all('td')[2].text.strip(),
+				'dob': row.find_all('td')[3].text.strip(),
+				'status': row.find_all('td')[4].text.strip(),
+				'facility': row.find_all('td')[5].text.strip(),
+				'ethnicity': row.find_all('td')[6].text.strip(),
+			}
+
+			page_data[din]['county'] = self.inmate_details(din)['county']
+
+		return page_data
+
+	def search(self, name):
 		if ',' not in name:
 			name += ','
 
@@ -161,8 +167,34 @@ class NYS(object):
 			'M00_NYSID_FLD2I': '',
 		}, headers=self.headers), {'id': 'dinlist'})
 
-		page_data, last_seen_name = self._process_page(s)
+		page_data = self._process_page(s)
 
+		return page_data
+
+	@property
+	def seeds(self):
+		if self._seeds:
+			return self._seeds
+
+		seeds = []
+		while len(seeds) < self.limit:
+			seeds.append(''.join(random.choice(string.uppercase) for x in range(2)))
+
+		self._seeds = seeds
+
+		return seeds
+
+	def get_random_records(self):
+		data = {}
+
+		for seed in self.seeds:
+			if len(data) >= self.limit:
+				break
+			data.update(self.search(seed))
+
+		return data
+
+	def get_all_records(self):
 		if last_seen_name == name:
 			# probably a single person with > 3 records; searching by their name again
 			# won't help. we have to click "Next"
@@ -192,16 +224,12 @@ class NYS(object):
 
 			_page_data, last_seen_name = self._process_page(s)
 			page_data.update(_page_data)
-
 		if len(page_data) > 3:
-			if page_i < MAX_PAGES:
 				# all pages except the last have 5 results
-				page_i += len(page_data) / 4
 				try:
-					_d = self.search(last_seen_name, page_i)
+					_d = self.search(last_seen_name)
 					page_data.update(_d[0])
 					last_seen_name = _d[1]
-					page_i = _d[2]
 				except ConnectionError as e:
 					log.error("Connection error, {0}".format(e))
 					pass
@@ -209,45 +237,82 @@ class NYS(object):
 					log.error("User interrupted")
 					pass
 
-			else:
-				log.warning('reached MAX_PAGES ({0})'.format(MAX_PAGES))
 
-		return page_data, last_seen_name, page_i
+def writeCSV(data, filename):
+	with open(filename, "w") as f:
+		writer = csv.writer(f)
+
+		FIELDS = [
+			'din',
+			'name',
+			'sex',
+			'dob',
+			'facility',
+			'ethnicity',
+			'status',
+			'county'
+		]
+
+		writer.writerow(FIELDS)
+
+		for d in sorted(data.keys()):
+			writer.writerow([data[d][field] for field in FIELDS])
+
+		f.close()
+		log.info('Wrote {0}'.format(filename))
 
 
-nys = NYS()
+# define argparse arguments
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--start', default='a')
-args = parser.parse_args()
 
-data = {}
-
-data, last_seen_name, pages = nys.search(args.start)
-
-f = open('{0:%Y-%m-%d}_{1}-{2}.csv'.format(datetime.now(), args.start, last_seen_name), "w")
-
-log.info('Fetched {0} pages ({1} records). Last name "{2}"'.format(
-	pages, len(data), last_seen_name)
+parser.add_argument(
+	'--limit', default=20,
+	help=u'Stop after this many records (default 20)'
 )
 
-writer = csv.writer(f)
+group = parser.add_mutually_exclusive_group()
+group.add_argument(
+	'--start', default='a', 
+	help=u'Start with a search for this name (default "a")'
+)
+group.add_argument(
+	'--random', action='store_true', help=u'Fetch at random'
+)
+group.add_argument(
+	'--seed-file', type=argparse.FileType('r'),
+	help=u'Use this list of names to search'
+)
+group.add_argument(
+	'--generate-seed-file', type=argparse.FileType('w'),
+	help=u'Generate list of random bigrams for repeatable random searches'
+)
+group.add_argument('--din', help='Get details on a single inmate by DIN')
 
-FIELDS = [
-	'din',
-	'name',
-	'sex',
-	'dob',
-	'facility',
-	'ethnicity',
-	'status',
-	'county'
-]
+args = parser.parse_args()
 
-writer.writerow(FIELDS)
+# argument sanity checks
 
-for d in sorted(data.keys()):
-	writer.writerow([data[d][field] for field in FIELDS])
+if args.din and args.random:
+	parser.error('--random and --din cannot both be specified')
 
-f.close()
-log.info('Wrote CSV')
+# initialise API object
+
+nys = NYS(limit=args.limit)
+
+# perform actions
+
+if args.seed_file:
+	args.random = True
+	nys._seeds = [s.strip() for s in args.seed_file.readlines()]
+
+if args.din:
+	print nys.inmate_details(args.din)
+elif args.generate_seed_file:
+	args.generate_seed_file.writelines("\n".join(nys.seeds))
+elif args.random or args.seed:
+	writeCSV(nys.get_random_records(),
+			'{0:%Y-%m-%d}_random.csv'.format(datetime.now()))
+else:
+	writeCSV(nys.search(args.start),
+			'{0:%Y-%m-%d}_{0}.csv'.format(datetime.now(), args.start))
