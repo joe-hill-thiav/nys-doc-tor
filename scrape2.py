@@ -167,7 +167,7 @@ class NYS(object):
 			'M00_NYSID_FLD2I': '',
 		}, headers=self.headers), {'id': 'dinlist'})
 
-		page_data = self._process_page(s)
+		page_data = self._process_page(s), s
 
 		return page_data
 
@@ -190,12 +190,33 @@ class NYS(object):
 		for seed in self.seeds:
 			if len(data) >= self.limit:
 				break
-			data.update(self.search(seed))
+			d = self.search(seed)
+			data.update(d[0])
 
 		return data
 
-	def get_all_records(self):
-		if last_seen_name == name:
+	def get_all_records(self, start):
+		data, s = self.search(start)
+
+		def _names(data):
+			return [data[k]['name'] for k in [data.keys()[0], data.keys()[-1]]]
+
+		names = _names(data)
+
+		if len(data) > 3:
+				# all pages except the last have 5 results
+				try:
+					_data, s = self.get_all_records(names[-1])
+					data.update(_data)
+					names = _names(_data)
+				except ConnectionError as e:
+					log.error("Connection error, {0}".format(e))
+					pass
+				except KeyboardInterrupt:
+					log.error("User interrupted")
+					pass
+
+		while names[0] == names[-1]:
 			# probably a single person with > 3 records; searching by their name again
 			# won't help. we have to click "Next"
 			form_next = s.find('div', class_='aligncenter').parent.parent
@@ -222,20 +243,11 @@ class NYS(object):
 				'next': "Next 4 Inmate Names"
 			}, headers=self.headers), {'id': 'dinlist'})
 
-			_page_data, last_seen_name = self._process_page(s)
-			page_data.update(_page_data)
-		if len(page_data) > 3:
-				# all pages except the last have 5 results
-				try:
-					_d = self.search(last_seen_name)
-					page_data.update(_d[0])
-					last_seen_name = _d[1]
-				except ConnectionError as e:
-					log.error("Connection error, {0}".format(e))
-					pass
-				except KeyboardInterrupt:
-					log.error("User interrupted")
-					pass
+			_data = self._process_page(s)
+			data.update(_page_data)
+			names = _names(_data)
+
+		return data, s
 
 
 def writeCSV(data, filename):
@@ -271,10 +283,9 @@ parser.add_argument(
 	help=u'Stop after this many records (default 20)'
 )
 
-group = parser.add_mutually_exclusive_group()
+group = parser.add_mutually_exclusive_group(required=True)
 group.add_argument(
-	'--start', default='a', 
-	help=u'Start with a search for this name (default "a")'
+	'--start', help=u'Start with a search for this name'
 )
 group.add_argument(
 	'--random', action='store_true', help=u'Fetch at random'
@@ -284,8 +295,9 @@ group.add_argument(
 	help=u'Use this list of names to search'
 )
 group.add_argument(
-	'--generate-seed-file', type=argparse.FileType('w'),
-	help=u'Generate list of random bigrams for repeatable random searches'
+	'--generate-seeds',
+	action='store_true',
+	help=u'Output list of random bigrams for repeatable random searches'
 )
 group.add_argument('--din', help='Get details on a single inmate by DIN')
 
@@ -308,11 +320,12 @@ if args.seed_file:
 
 if args.din:
 	print nys.inmate_details(args.din)
-elif args.generate_seed_file:
-	args.generate_seed_file.writelines("\n".join(nys.seeds))
-elif args.random or args.seed:
+elif args.generate_seeds:
+	for seed in nys.seeds:
+		print seed
+elif args.random or args.seed_file:
 	writeCSV(nys.get_random_records(),
 			'{0:%Y-%m-%d}_random.csv'.format(datetime.now()))
 else:
-	writeCSV(nys.search(args.start),
-			'{0:%Y-%m-%d}_{0}.csv'.format(datetime.now(), args.start))
+	writeCSV(nys.get_all_records(args.start)[0],
+			'{0:%Y-%m-%d}_{1}.csv'.format(datetime.now(), args.start))
