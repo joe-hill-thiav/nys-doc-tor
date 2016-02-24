@@ -121,7 +121,10 @@ class NYS(object):
 										{'id': 't1a'})
 
 			return {
-				"county": s.find(headers='t1k').text.strip()
+				"county": s.find(headers='t1k').text.strip(),
+				"crimes": ", ".join([td.text.strip() 
+									 for td in s.find_all(headers='crime')
+									 if td.text.strip() != ''])
 			}
 
 
@@ -153,7 +156,7 @@ class NYS(object):
 			raise
 
 		for i, din in enumerate(page_data.keys()):
-			page_data[din]['county'] = results[i]
+			page_data[din].update(results[i])
 
 		return page_data
 
@@ -275,7 +278,8 @@ def writeCSV(data, filename):
 			'facility',
 			'ethnicity',
 			'status',
-			'county'
+			'county',
+			'crimes'
 		]
 
 		writer.writerow(FIELDS)
