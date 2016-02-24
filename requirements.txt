@@ -1,0 +1,5 @@
+beautifulsoup4==4.4.1
+colorlog==2.6.0
+requests==2.8.1
+requests-cache==0.4.10
+zenlog==0.1
