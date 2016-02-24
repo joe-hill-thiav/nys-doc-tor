@@ -1,0 +1,45 @@
+nys doc-tor
+----------------------
+
+liberate data from the ny department of (in)corrections.
+
+GPLv3.
+
+  $ git clone ..
+  $ pip install requirements.txt
+
+HIGHLY RECOMMENDED TO USE TOR, e.g.
+
+  $ <start tor>
+  $ torify bash
+
+then:
+
+  $ python scrape2.py -h
+  usage: scrape2.py [-h] [--limit LIMIT]
+                    (--start START | --random | --seed-file SEED_FILE | --generate-seeds | --din DIN)
+
+  optional arguments:
+    -h, --help            show this help message and exit
+    --limit LIMIT         Stop after this many records (default 20)
+    --start START         Start with a search for this name
+    --random              Fetch at random
+    --seed-file SEED_FILE
+                          Use this list of names to search
+    --generate-seeds      Output list of random bigrams for repeatable random
+                          searches
+    --din DIN             Get details on a single inmate by DIN
+
+or, in other words:
+
+  $ python scrape2.py --random
+
+or 
+
+  $ python scrape2.py --generate-seeds > seeds
+  $ python scrape2.py --seed-file seeds
+
+then open the resulting CSV.
+
+using `--start` will download all records starting with the listed search term;
+use Ctrl+C to cancel if you want.
