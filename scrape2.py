@@ -11,6 +11,9 @@ import time
 
 from bs4 import BeautifulSoup
 
+from multiprocessing.dummy import Pool
+from multiprocessing import cpu_count
+
 from zenlog import log
 
 import requests
@@ -76,7 +79,10 @@ class NYS(object):
 		self.DFH_STATE_TOKEN = s.find(
 			'input', attrs={'name': 'DFH_STATE_TOKEN'}
 		)['value']
+
 		self.limit = limit
+
+		self.pool = Pool(cpu_count() * 2)
 
 	def inmate_details(self, din):
 			self.headers['Referer'] = URLS['search']
@@ -140,7 +146,14 @@ class NYS(object):
 				'ethnicity': row.find_all('td')[6].text.strip(),
 			}
 
-			page_data[din]['county'] = self.inmate_details(din)['county']
+		try:
+			results = self.pool.map(self.inmate_details, page_data.keys())
+		except KeyboardInterrupt:
+			self.pool.terminate()
+			raise
+
+		for i, din in enumerate(page_data.keys()):
+			page_data[din]['county'] = results[i]
 
 		return page_data
 
@@ -327,5 +340,10 @@ elif args.random or args.seed_file:
 	writeCSV(nys.get_random_records(),
 			'{0:%Y-%m-%d}_random.csv'.format(datetime.now()))
 else:
-	writeCSV(nys.get_all_records(args.start)[0],
-			'{0:%Y-%m-%d}_{1}.csv'.format(datetime.now(), args.start))
+	d = nys.get_all_records(args.start)[0]
+	names = [d[k]['name'].split(',')[0] for k in [d.keys()[0], d.keys()[-1]]]
+	writeCSV(d,
+			'{0:%Y-%m-%d}_{1}-{2}.csv'.format(
+				datetime.now(),
+				*names
+			))
