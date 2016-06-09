@@ -41,6 +41,24 @@ URLS = {
 requests_cache.install_cache('scrape', allowable_methods=['GET', 'POST'])
 
 
+FACILITY_NAMES = (
+	'ALBION',
+	'ATTICA',
+	'AUBURN',
+	'BEDFORD HILLS',
+	'CLINTON',
+	'COXSACKIE',
+	'EASTERN',
+	'ELMIRA',
+	'FISHKILL',
+	'GREAT MEADOW',
+	'GREENE',
+	'GREEN HAVEN',
+	'SHAWANGUNK',
+	'WALLKILL'
+)
+
+
 class FUBAR(Exception):
 	# the only appropriate way of describing how the site handles bad requests..
 	pass
@@ -127,8 +145,13 @@ class NYS(object):
 									 if td.text.strip() != ''])
 			}
 
+	def _process_page(self, page, query=None):
+		if query is None:
+			query = {}
 
-	def _process_page(self, page):
+		query['status'] = 'IN CUSTODY'
+		query['facility'] = FACILITY_NAMES
+
 		page_data = OrderedDict()
 
 		for i, row in enumerate(page.find(id='dinlist').find_all('tr')):
@@ -156,11 +179,22 @@ class NYS(object):
 			raise
 
 		for i, din in enumerate(page_data.keys()):
-			page_data[din].update(results[i])
+				for key, value in query.items():
+					try:
+						if page_data[din][key] not in value:
+							del(page_data[din])
+							break
+					except KeyError:
+						if page_data[din][key] != value:
+							del(page_data[din])
+							break
+				if din not in page_data:
+					continue
+				page_data[din].update(results[i])
 
 		return page_data
 
-	def search(self, name):
+	def search(self, name, query=None):
 		if ',' not in name:
 			name += ','
 
@@ -183,7 +217,7 @@ class NYS(object):
 			'M00_NYSID_FLD2I': '',
 		}, headers=self.headers), {'id': 'dinlist'})
 
-		page_data = self._process_page(s), s
+		page_data = self._process_page(s, query), s
 
 		return page_data
 
@@ -193,7 +227,7 @@ class NYS(object):
 			return self._seeds
 
 		seeds = []
-		while len(seeds) < self.limit:
+		while len(seeds) < int(self.limit):
 			seeds.append(''.join(random.choice(string.uppercase) for x in range(2)))
 
 		self._seeds = seeds
@@ -285,7 +319,7 @@ def writeCSV(data, filename):
 		writer.writerow(FIELDS)
 
 		for d in sorted(data.keys()):
-			writer.writerow([data[d][field] for field in FIELDS])
+			writer.writerow([data[d][field] for field in FIELDS if field in data[d]])
 
 		f.close()
 		log.info('Wrote {0}'.format(filename))
