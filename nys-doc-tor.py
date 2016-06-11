@@ -4,9 +4,11 @@ import argparse
 import csv
 from collections import OrderedDict
 from datetime import datetime
+import logging
 import random
 import re
 import string
+import sys
 import time
 
 from bs4 import BeautifulSoup
@@ -38,26 +40,6 @@ URLS = {
 	'detail2': 'http://nysdoccslookup.doccs.ny.gov/GCA00P00/WIQ2/WINQ120',
 }
 
-requests_cache.install_cache('scrape', allowable_methods=['GET', 'POST'])
-
-
-FACILITY_NAMES = (
-	'ALBION',
-	'ATTICA',
-	'AUBURN',
-	'BEDFORD HILLS',
-	'CLINTON',
-	'COXSACKIE',
-	'EASTERN',
-	'ELMIRA',
-	'FISHKILL',
-	'GREAT MEADOW',
-	'GREENE',
-	'GREEN HAVEN',
-	'SHAWANGUNK',
-	'WALLKILL'
-)
-
 
 class FUBAR(Exception):
 	# the only appropriate way of describing how the site handles bad requests..
@@ -77,18 +59,23 @@ class NYS(object):
 
 	_seeds = None
 
+	query = {
+		'status': 'IN CUSTODY'
+	}
+
 	def _r(self, response, expected_element=None):
 		""" BeautifulSoup response.content, check for expected_element """
 		s = BeautifulSoup(response.content, "lxml")
 
 		if expected_element is not None and s.find(**expected_element) is None:
+		    if log.level() <= logging.DEBUG:
 			f = open('{0}.html'.format(time.time()), "w")
 			f.write(response.content)
 			f.close()
 			print response.request.headers
 			print response.headers
 			from pdb import set_trace; set_trace() 
-			raise FUBAR("Failed to load page")
+		    raise FUBAR("Failed to load page")
 		return s
 
 	def __init__(self, limit=10):
@@ -105,7 +92,7 @@ class NYS(object):
 	def inmate_details(self, din):
 			self.headers['Referer'] = URLS['search']
 
-			log.debug("DETAILS {0}".format(din))
+			log.info("DETAILS {0}".format(din))
 
 			data = {
 				'M13_PAGE_CLICKI': '',
@@ -145,13 +132,7 @@ class NYS(object):
 									 if td.text.strip() != ''])
 			}
 
-	def _process_page(self, page, query=None):
-		if query is None:
-			query = {}
-
-		query['status'] = 'IN CUSTODY'
-		query['facility'] = FACILITY_NAMES
-
+	def _process_page(self, page):
 		page_data = OrderedDict()
 
 		for i, row in enumerate(page.find(id='dinlist').find_all('tr')):
@@ -179,7 +160,7 @@ class NYS(object):
 			raise
 
 		for i, din in enumerate(page_data.keys()):
-				for key, value in query.items():
+				for key, value in self.query.items():
 					try:
 						if page_data[din][key] not in value:
 							del(page_data[din])
@@ -194,7 +175,7 @@ class NYS(object):
 
 		return page_data
 
-	def search(self, name, query=None):
+	def search(self, name):
 		if ',' not in name:
 			name += ','
 
@@ -217,7 +198,7 @@ class NYS(object):
 			'M00_NYSID_FLD2I': '',
 		}, headers=self.headers), {'id': 'dinlist'})
 
-		page_data = self._process_page(s, query), s
+		page_data = self._process_page(s), s
 
 		return page_data
 
@@ -228,7 +209,7 @@ class NYS(object):
 
 		seeds = []
 		while len(seeds) < int(self.limit):
-			seeds.append(''.join(random.choice(string.uppercase) for x in range(2)))
+			seeds.append(''.join(random.choice(string.uppercase) for x in range(3)))
 
 		self._seeds = seeds
 
@@ -240,7 +221,17 @@ class NYS(object):
 		for seed in self.seeds:
 			if len(data) >= self.limit:
 				break
-			d = self.search(seed)
+			try:
+				d = self.search(seed)
+			except FUBAR:
+				log.error("Bad response from server")
+				break
+			except ConnectionError as e:
+				log.error("Connection error")
+				break
+			except:
+				log.error('Unknown error')
+				break
 			data.update(d[0])
 
 		return data
@@ -307,13 +298,13 @@ def writeCSV(data, filename):
 		FIELDS = [
 			'din',
 			'name',
+			'facility',
+			'county',
+			'crimes',
 			'sex',
 			'dob',
-			'facility',
 			'ethnicity',
 			'status',
-			'county',
-			'crimes'
 		]
 
 		writer.writerow(FIELDS)
@@ -322,7 +313,7 @@ def writeCSV(data, filename):
 			writer.writerow([data[d][field] for field in FIELDS if field in data[d]])
 
 		f.close()
-		log.info('Wrote {0}'.format(filename))
+		log.info('Wrote {0} names to {1}'.format(len(data), filename))
 
 
 # define argparse arguments
@@ -333,6 +324,10 @@ parser.add_argument(
 	'--limit', default=20,
 	help=u'Stop after this many records (default 20)'
 )
+parser.add_argument('-d', '--debug', action='store_true')
+parser.add_argument('-c', '--cache', action='store_true', help='Save downloaded HTML into a database; useful for development')
+
+parser.add_argument('-f', '--facilities-list', type=argparse.FileType('r'), const=sys.stdin, nargs='?')
 
 group = parser.add_mutually_exclusive_group(required=True)
 group.add_argument(
@@ -354,10 +349,16 @@ group.add_argument('--din', help='Get details on a single inmate by DIN')
 
 args = parser.parse_args()
 
+if not args.debug:
+    log.level('info')
+
+if args.cache:
+    requests_cache.install_cache('cache', allowable_methods=['GET', 'POST'])
+
 # argument sanity checks
 
 if args.din and args.random:
-	parser.error('--random and --din cannot both be specified')
+    parser.error('--random and --din cannot both be specified')
 
 # initialise API object
 
@@ -366,22 +367,22 @@ nys = NYS(limit=args.limit)
 # perform actions
 
 if args.seed_file:
-	args.random = True
-	nys._seeds = [s.strip() for s in args.seed_file.readlines()]
+    nys._seeds = [s.strip() for s in args.seed_file.readlines()]
+if args.facilities_list:
+    nys.query['facility'] = args.facilities_list.read().splitlines()
 
 if args.din:
-	print nys.inmate_details(args.din)
+    print nys.inmate_details(args.din)
 elif args.generate_seeds:
-	for seed in nys.seeds:
-		print seed
+    for seed in nys.seeds:
+	print seed
 elif args.random or args.seed_file:
-	writeCSV(nys.get_random_records(),
-			'{0:%Y-%m-%d}_random.csv'.format(datetime.now()))
+    writeCSV(nys.get_random_records(),
+	'{0:%Y-%m-%d}_random.csv'.format(datetime.now()))
 else:
-	d = nys.get_all_records(args.start)[0]
-	names = [d[k]['name'].split(',')[0] for k in [d.keys()[0], d.keys()[-1]]]
-	writeCSV(d,
-			'{0:%Y-%m-%d}_{1}-{2}.csv'.format(
-				datetime.now(),
-				*names
-			))
+    d = nys.get_all_records(args.start)[0]
+    names = [d[k]['name'].split(',')[0] for k in [d.keys()[0], d.keys()[-1]]]
+    writeCSV(d, '{0:%Y-%m-%d}_{1}-{2}.csv'.format(
+		datetime.now(),
+		*names
+    ))
