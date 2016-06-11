@@ -6,7 +6,7 @@ liberate data from the ny department of (in)corrections.
 GPLv3.
 
   $ git clone ..
-  $ pip install requirements.txt
+  $ pip install -r requirements.txt
 
 HIGHLY RECOMMENDED TO USE TOR, e.g.
 
